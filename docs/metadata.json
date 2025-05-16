@@ -1,0 +1,140 @@
+{
+  "files": {
+    "client/index.html": {
+      "architecture": {
+        "role": "frontend/main",
+        "description": "Page principale de l'application qui contient la structure HTML et les styles CSS",
+        "dependencies": [
+          "js/p2p-manager.js",
+          "js/app.js",
+          "peerjs (cdn)"
+        ]
+      },
+      "security": {
+        "permissions": "public",
+        "sensitive_data": []
+      },
+      "performance": {
+        "critical_path": true,
+        "caching_strategy": "static"
+      },
+      "testing": {
+        "test_files": ["tests/index.test.html"],
+        "coverage_required": 80
+      },
+      "maintenance": {
+        "last_review": "2024-03-20",
+        "complexity": "low",
+        "technical_debt": "low"
+      },
+      "documentation": {
+        "api_docs": "docs/index.html.md",
+        "examples": []
+      },
+      "semantics": {
+        "concepts": ["UI", "Layout", "User Interface"],
+        "patterns": ["Component", "Template"],
+        "domain": "Web Frontend"
+      },
+      "relationships": {
+        "communicates_with": ["js/app.js", "js/p2p-manager.js"],
+        "extends": null,
+        "implements": null
+      },
+      "history": {
+        "changes": [
+          {
+            "date": "2024-03-20",
+            "author": "AI Assistant",
+            "description": "Initial implementation"
+          }
+        ]
+      },
+      "llm": {
+        "context": "Main entry point for the web application",
+        "examples": [],
+        "constraints": [
+          "Must be accessible",
+          "Should be responsive",
+          "Must load scripts in correct order"
+        ],
+        "suggestions": [
+          "Consider adding meta tags for SEO",
+          "Add viewport settings for mobile",
+          "Implement progressive enhancement"
+        ]
+      }
+    },
+    "client/js/app.js": {
+      "architecture": {
+        "role": "frontend/core",
+        "description": "Logique principale de l'application",
+        "dependencies": ["js/p2p-manager.js"],
+        "responsibilities": [
+          "Gestion du chargement des images",
+          "Conversion des images en base64",
+          "Affichage des images",
+          "Gestion des erreurs"
+        ]
+      },
+      "security": {
+        "permissions": "public",
+        "sensitive_data": ["images en base64"]
+      },
+      "performance": {
+        "critical_path": true,
+        "caching_strategy": "in-memory"
+      },
+      "testing": {
+        "test_files": ["tests/app.test.js"],
+        "coverage_required": 85
+      },
+      "maintenance": {
+        "last_review": "2024-03-20",
+        "complexity": "medium",
+        "technical_debt": "low"
+      },
+      "documentation": {
+        "api_docs": "docs/app.js.md",
+        "examples": ["docs/examples/image-loading.md"]
+      },
+      "semantics": {
+        "concepts": ["Image Processing", "P2P", "WebRTC"],
+        "patterns": ["Observer", "Cache"],
+        "domain": "Real-time Communication"
+      },
+      "relationships": {
+        "communicates_with": ["js/p2p-manager.js"],
+        "extends": null,
+        "implements": null
+      },
+      "history": {
+        "changes": [
+          {
+            "date": "2024-03-20",
+            "author": "AI Assistant",
+            "description": "Initial implementation"
+          }
+        ]
+      },
+      "llm": {
+        "context": "Core application logic for image handling and P2P sharing",
+        "examples": [
+          "Image loading and conversion",
+          "P2P image sharing",
+          "Error handling"
+        ],
+        "constraints": [
+          "Must handle large images efficiently",
+          "Should implement proper error handling",
+          "Must maintain backward compatibility"
+        ],
+        "suggestions": [
+          "Implement image compression",
+          "Add retry logic for failed loads",
+          "Implement progressive loading"
+        ]
+      }
+    }
+  }
+} 

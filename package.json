@@ -1,0 +1,13 @@
+{
+  "name": "p2p-image-sharing",
+  "version": "1.0.0",
+  "description": "Application de partage P2P d'images",
+  "private": true,
+  "workspaces": [
+    "server"
+  ],
+  "scripts": {
+    "start": "cd server && npm start",
+    "install": "cd server && npm install"
+  }
+} 

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test P2P Image Sharing</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    <script type="module" src="js/app.js"></script>
+</head>
+<body>
+    <h1>Test P2P Image Sharing</h1>
+    
+    <div class="container">
+        <div class="panel">
+            <h2>Connexion</h2>
+            <div class="status">
+                Votre ID: <span id="peerId">En attente...</span>
+            </div>
+            <div class="connected-peers">
+                <h3>Pairs connectés:</h3>
+                <div id="peerList"></div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>Images</h2>
+            <div id="images-container"></div>
+            <button id="loadImageBtn">Charger une image de test</button>
+        </div>
+    </div>
+</body>
+</html> 

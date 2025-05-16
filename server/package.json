@@ -1,0 +1,14 @@
+{
+  "name": "p2p-image-sharing-server",
+  "version": "1.0.0",
+  "description": "Serveur pour le partage d'images P2P",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "discovery": "node discovery-server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
