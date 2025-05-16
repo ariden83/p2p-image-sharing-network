@@ -1,13 +1,19 @@
 {
-  "name": "p2p-image-sharing",
+  "name": "p2p-discovery-server",
   "version": "1.0.0",
-  "description": "Application de partage P2P d'images",
-  "private": true,
-  "workspaces": [
-    "server"
-  ],
+  "description": "Serveur de découverte pour l'application P2P",
+  "main": "server.js",
   "scripts": {
-    "start": "cd server && npm start",
-    "install": "cd server && npm install"
+    "start": "node server/server.js",
+    "dev": "nodemon server/server.js",
+    "start:front": "cd client && node ../node_modules/http-server/bin/http-server -p 3000"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2",
+    "http-server": "^14.1.1"
   }
-} 
+}

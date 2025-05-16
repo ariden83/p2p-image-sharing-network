@@ -217,4 +217,46 @@ button {
 .stats-summary div {
     margin: 5px 0;
     color: #333;
+}
+
+.shared-images-info {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 12px 15px;
+    margin: 10px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    transition: all 0.3s ease;
+}
+
+.shared-images-info:hover {
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    transform: translateY(-1px);
+}
+
+.shared-images-info .info-label {
+    color: #495057;
+    font-weight: 500;
+    font-size: 0.95rem;
+}
+
+.shared-images-info .info-value {
+    background-color: #007bff;
+    color: white;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-weight: 600;
+    font-size: 1rem;
+    min-width: 40px;
+    text-align: center;
+    animation: pulse 0.3s ease-in-out;
+}
+
+@keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+    100% { transform: scale(1); }
 } 
