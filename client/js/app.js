@@ -8,6 +8,7 @@ let availablePeers = []; // Liste des pairs disponibles au démarrage
 let currentPeerIndex = 0; // Index du pair actuellement connecté
 let currentImageIndex = 0; // Index de l'image actuelle
 let sharedImagesCount = 0; // Compteur d'images partagées initialisé à 0
+let peerUpdateInterval = null; // Variable pour suivre l'intervalle de mise à jour des pairs
 
 // Stocker les images déjà affichées pour éviter les doublons
 const displayedImages = new Set();
@@ -22,6 +23,40 @@ let lastResetTime = Date.now();
 
 // Cache pour la géolocalisation
 let cachedGeolocation = null;
+
+// Fonction pour démarrer l'intervalle de mise à jour des pairs
+function startPeerUpdateInterval() {
+    setInterval(async () => {
+        // Mettre à jour la liste des pairs disponibles pour l'affichage
+        await updateAvailablePeers();
+        updatePeerList(); // Rafraîchir l'affichage de la liste des pairs
+
+        // Vérifier d'abord si nous avons une connexion active
+        if (connections.size === 0) {
+            console.log('Pas de connexion active, tentative de connexion...');
+            if (availablePeers.length > 0) {
+                console.log('Pairs disponibles, tentative de connexion...');
+                currentPeerIndex = -1;
+                connectToNextPeer();
+            }
+        } else {
+            // Vérifier si la connexion actuelle est toujours active
+            const isConnectionActive = await checkCurrentConnection();
+            if (!isConnectionActive) {
+                console.log('Connexion actuelle perdue, tentative de connexion à un nouveau pair...');
+                const currentConn = Array.from(connections.values())[0];
+                if (currentConn) {
+                    currentConn.close();
+                }
+                if (availablePeers.length > 0) {
+                    console.log('Pairs disponibles, tentative de connexion...');
+                    currentPeerIndex = -1;
+                    connectToNextPeer();
+                }
+            }
+        }
+    }, 5000);
+}
 
 // Obtenir la liste des pairs connus
 async function getKnownPeers() {
@@ -173,6 +208,160 @@ function updateBestPeers(newPeer) {
     console.log('Liste des meilleurs pairs mise à jour:', bestPeers);
 }
 
+// Mettre à jour la liste des pairs connectés
+function updatePeerList() {
+    const peerList = document.getElementById('peerList');
+    peerList.innerHTML = '';
+    
+    // Filtrer notre propre ID de la liste
+    const filteredPeers = availablePeers.filter(peerData => peerData.peerId !== peer.id);
+    
+    if (filteredPeers.length === 0) {
+        const div = document.createElement('div');
+        div.className = 'peer-item';
+        div.textContent = 'Aucun pair disponible';
+        peerList.appendChild(div);
+        return;
+    }
+
+    // Fonction pour formater la bande passante
+    function formatBandwidth(bandwidth) {
+        if (bandwidth >= 1000000) { // Plus de 1 Mbps
+            return `${(bandwidth / 1000000).toFixed(2)} Mbps`;
+        } else if (bandwidth >= 1000) { // Plus de 1 kbps
+            return `${(bandwidth / 1000).toFixed(2)} kbps`;
+        } else {
+            return `${bandwidth.toFixed(2)} bps`;
+        }
+    }
+
+    filteredPeers.forEach(peerData => {
+        const div = document.createElement('div');
+        div.className = 'peer-item connected';
+        
+        // Formater les informations de qualité de connexion
+        let qualityInfo = '';
+        if (peerData.connectionQuality) {
+            // Si connectionQuality est un nombre, c'est l'ancien format
+            if (typeof peerData.connectionQuality === 'number') {
+                const quality = peerData.connectionQuality;
+                let latency;
+                if (quality === 100) latency = 0;
+                else if (quality === 80) latency = 50;
+                else if (quality === 60) latency = 100;
+                else if (quality === 40) latency = 200;
+                else if (quality === 20) latency = 500;
+                else latency = 1000;
+                
+                qualityInfo = `
+                    <div>Qualité: ${quality}%</div>
+                    <div>Latence: ${latency}ms</div>
+                `;
+            } else {
+                // Nouveau format avec objet connectionQuality
+                const quality = peerData.connectionQuality.quality || peerData.connectionQuality;
+                const latency = peerData.connectionQuality.latency;
+                const bandwidth = peerData.connectionQuality.bandwidth;
+                
+                qualityInfo = `
+                    <div>Qualité: ${quality}%</div>
+                    ${!isNaN(latency) ? `<div>Latence: ${Math.round(latency)}ms</div>` : ''}
+                    ${!isNaN(bandwidth) ? `<div>Bande passante: ${formatBandwidth(bandwidth)}</div>` : ''}
+                `;
+            }
+        }
+
+        div.innerHTML = `
+            <div>Pair: ${peerData.peerId}</div>
+            <div class="peer-details">
+                ${peerData.country ? `Pays: ${peerData.country}` : ''}
+                ${peerData.city ? `Ville: ${peerData.city}` : ''}
+                <div>Images partagées: ${peerData.sharedImages || 0}</div>
+                <div>Page en cours: ${peerData.address || 'home'}</div>
+                ${qualityInfo}
+            </div>
+        `;
+        peerList.appendChild(div);
+    });
+}
+
+// Mettre à jour la liste des pairs disponibles
+async function updateAvailablePeers() {
+    try {
+        const response = await fetch(`${config.discoveryServer.url}/peers`);
+        if (!response.ok) {
+            throw new Error('Erreur lors de la récupération des pairs');
+        }
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error('Erreur serveur lors de la récupération des pairs');
+        }
+        
+        // Filtrer notre propre ID de la liste
+        const newPeers = data.peers.filter(peerData => peerData.peerId !== peer.id);
+        
+        // Mettre à jour la liste des pairs disponibles
+        availablePeers = newPeers;
+        console.log('Liste des pairs mise à jour:', availablePeers);
+        updatePeerList();
+    } catch (error) {
+        console.error('Erreur lors de la mise à jour des pairs:', error);
+    }
+}
+
+// Vérifier si la connexion actuelle est toujours active
+async function checkCurrentConnection() {
+    if (connections.size === 0) {
+        return false;
+    }
+
+    const currentConn = Array.from(connections.values())[0];
+    if (!currentConn || !currentConn.open) {
+        return false;
+    }
+
+    try {
+        // Envoyer un message de vérification au pair actuel
+        const response = await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                reject(new Error('Timeout lors de la vérification de la connexion'));
+            }, 5000);
+
+            const messageHandler = (data) => {
+                let message;
+                try {
+                    if (data instanceof ArrayBuffer) {
+                        const decoder = new TextDecoder();
+                        const text = decoder.decode(data);
+                        message = JSON.parse(text);
+                    } else if (typeof data === 'string') {
+                        message = JSON.parse(data);
+                    } else {
+                        message = data;
+                    }
+                } catch (e) {
+                    console.error('Erreur lors du parsing du message:', e);
+                    return;
+                }
+
+                if (message.type === 'pong') {
+                    clearTimeout(timeout);
+                    currentConn.removeListener('data', messageHandler);
+                    resolve(true);
+                }
+            };
+
+            currentConn.on('data', messageHandler);
+            currentConn.send(JSON.stringify({ type: 'ping' }));
+        });
+
+        return response;
+    } catch (error) {
+        console.error('Erreur lors de la vérification de la connexion:', error);
+        return false;
+    }
+}
+
 // S'enregistrer auprès du serveur de découverte
 async function registerWithDiscoveryServer(peerId, isRetry = false) {
     try {
@@ -211,7 +400,10 @@ async function registerWithDiscoveryServer(peerId, isRetry = false) {
         console.log('Enregistrement réussi:', data);
         
         // Mettre à jour la liste des pairs
-        updatePeerList(data.peers);
+        if (data.peers) {
+            availablePeers = data.peers.filter(peerData => peerData.peerId !== peer.id);
+            updatePeerList();
+        }
         
         // Démarrer le heartbeat
         startHeartbeat(peerId);
@@ -235,11 +427,28 @@ function startHeartbeat(peerId) {
     setInterval(async () => {
         try {
             const connectionQuality = await measureConnectionQuality();
+            const bandwidth = await measureBandwidth();
+            
+            // Calculer la latence à partir de la qualité de connexion
+            // La qualité est inversement proportionnelle à la latence
+            // 100 = 0ms, 80 = 50ms, 60 = 100ms, 40 = 200ms, 20 = 500ms
+            let latency;
+            if (connectionQuality === 100) latency = 0;
+            else if (connectionQuality === 80) latency = 50;
+            else if (connectionQuality === 60) latency = 100;
+            else if (connectionQuality === 40) latency = 200;
+            else if (connectionQuality === 20) latency = 500;
+            else latency = 1000; // Valeur par défaut pour les autres cas
+
             const peerData = {
                 peerId,
-                connectionQuality,
+                connectionQuality: {
+                    quality: connectionQuality,
+                    latency: latency,
+                    bandwidth: bandwidth
+                },
                 timestamp: Date.now(),
-                sharedImages: sharedImagesCount,  // Utiliser la valeur actuelle du compteur
+                sharedImages: sharedImagesCount,
                 address: window.location.pathname,
                 country: cachedGeolocation?.country || 'Unknown',
                 city: cachedGeolocation?.city || 'Unknown'
@@ -307,6 +516,22 @@ async function unregisterFromDiscoveryServer(peerId) {
     }
 }
 
+// Supprimer un pair problématique de la liste
+function removeProblematicPeer(peerId) {
+    console.log(`Suppression du pair problématique ${peerId} de la liste`);
+    
+    // Supprimer de la liste des pairs disponibles
+    availablePeers = availablePeers.filter(p => p.peerId !== peerId);
+    
+    // Supprimer de la liste des meilleurs pairs
+    bestPeers = bestPeers.filter(p => p.peerId !== peerId);
+    
+    // Mettre à jour l'affichage
+    updatePeerList();
+    
+    console.log('Liste des pairs après suppression:', availablePeers);
+}
+
 // Se connecter au prochain pair disponible
 async function connectToNextPeer() {
     if (availablePeers.length === 0) {
@@ -332,6 +557,17 @@ async function connectToNextPeer() {
     currentPeerIndex = (currentPeerIndex + 1) % availablePeers.length;
     const nextPeer = availablePeers[currentPeerIndex];
 
+    if (!nextPeer || !nextPeer.peerId) {
+        console.log('Pair invalide, mise à jour de la liste des pairs...');
+        await updateAvailablePeers();
+        if (availablePeers.length > 0) {
+            connectToNextPeer();
+        } else {
+            updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
+        }
+        return;
+    }
+
     try {
         console.log(`Tentative de connexion au pair ${nextPeer.peerId}`);
         updateConnectionStatus('connecting', `Tentative de connexion à ${nextPeer.peerId}...`);
@@ -356,46 +592,63 @@ async function connectToNextPeer() {
             console.log(`Connexion fermée avec ${nextPeer.peerId}`);
             connections.delete(nextPeer.peerId);
             peerImages.delete(nextPeer.peerId);
-            updatePeerList();
+            removeProblematicPeer(nextPeer.peerId);
             
-            // Tenter de se reconnecter immédiatement
-            setTimeout(async () => {
-                await updateAvailablePeers();
-                if (availablePeers.length > 0) {
-                    connectToNextPeer();
-                } else {
-                    updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
-                }
-            }, 1000);
+            // Vérifier immédiatement s'il y a d'autres pairs disponibles
+            if (availablePeers.length > 0) {
+                console.log('Tentative de connexion à un autre pair après fermeture...');
+                connectToNextPeer();
+            } else {
+                updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
+                // Vérifier à nouveau dans 5 secondes
+                setTimeout(async () => {
+                    await updateAvailablePeers();
+                    if (availablePeers.length > 0) {
+                        connectToNextPeer();
+                    }
+                }, 5000);
+            }
         });
 
         conn.on('error', (err) => {
             console.error(`Erreur de connexion avec ${nextPeer.peerId}:`, err);
             connections.delete(nextPeer.peerId);
             peerImages.delete(nextPeer.peerId);
-            updatePeerList();
+            removeProblematicPeer(nextPeer.peerId);
             
-            // Tenter de se reconnecter immédiatement
+            // Vérifier immédiatement s'il y a d'autres pairs disponibles
+            if (availablePeers.length > 0) {
+                console.log('Tentative de connexion à un autre pair après erreur...');
+                connectToNextPeer();
+            } else {
+                updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
+                // Vérifier à nouveau dans 5 secondes
+                setTimeout(async () => {
+                    await updateAvailablePeers();
+                    if (availablePeers.length > 0) {
+                        connectToNextPeer();
+                    }
+                }, 5000);
+            }
+        });
+    } catch (error) {
+        console.error(`Erreur lors de la connexion à ${nextPeer.peerId}:`, error);
+        removeProblematicPeer(nextPeer.peerId);
+        
+        // Vérifier immédiatement s'il y a d'autres pairs disponibles
+        if (availablePeers.length > 0) {
+            console.log('Tentative de connexion à un autre pair après erreur...');
+            connectToNextPeer();
+        } else {
+            updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
+            // Vérifier à nouveau dans 5 secondes
             setTimeout(async () => {
                 await updateAvailablePeers();
                 if (availablePeers.length > 0) {
                     connectToNextPeer();
-                } else {
-                    updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
                 }
-            }, 1000);
-        });
-    } catch (error) {
-        console.error(`Erreur lors de la connexion à ${nextPeer.peerId}:`, error);
-        // Tenter de se reconnecter immédiatement
-        setTimeout(async () => {
-            await updateAvailablePeers();
-            if (availablePeers.length > 0) {
-                connectToNextPeer();
-            } else {
-                updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
-            }
-        }, 1000);
+            }, 5000);
+        }
     }
 }
 
@@ -407,7 +660,7 @@ function isImageAvailable(imagePath, peerId = null) {
         displayedImages: Array.from(displayedImages)
     });
 
-    // Vérifier d'abord l'ID du serveur
+    // Vérifier d'abord l'ID serveur (normalisé)
     const serverImageId = `server-server-${imagePath}`;
     console.log('Vérification de l\'ID serveur:', serverImageId);
     if (displayedImages.has(serverImageId)) {
@@ -433,6 +686,20 @@ function isImageAvailable(imagePath, peerId = null) {
             } else {
                 console.log('Image trouvée dans le cache du pair mais non accessible, suppression');
                 displayedImages.delete(peerImageId);
+            }
+        }
+    }
+
+    // Vérifier tous les IDs de pairs possibles
+    for (const id of displayedImages) {
+        if (id.startsWith('peer-') && id.endsWith(`-${imagePath}`)) {
+            const img = document.querySelector(`[data-image-id="${id}"] img`);
+            if (img && img.src) {
+                console.log(`Image trouvée dans le cache d'un autre pair (${id}) et accessible`);
+                return true;
+            } else {
+                console.log(`Image trouvée dans le cache d'un autre pair (${id}) mais non accessible, suppression`);
+                displayedImages.delete(id);
             }
         }
     }
@@ -539,63 +806,6 @@ async function handleImageRequest(conn, imagePath) {
     }
 }
 
-// Mettre à jour la liste des pairs connectés
-function updatePeerList() {
-    const peerList = document.getElementById('peerList');
-    peerList.innerHTML = '';
-    
-    // Filtrer notre propre ID de la liste
-    const filteredPeers = availablePeers.filter(peerData => peerData.peerId !== peer.id);
-    
-    if (filteredPeers.length === 0) {
-        const div = document.createElement('div');
-        div.className = 'peer-item';
-        div.textContent = 'Aucun pair disponible';
-        peerList.appendChild(div);
-        return;
-    }
-
-    filteredPeers.forEach(peerData => {
-        const div = document.createElement('div');
-        div.className = 'peer-item connected';
-        div.innerHTML = `
-            <div>Pair: ${peerData.peerId}</div>
-            <div class="peer-details">
-                ${peerData.country ? `Pays: ${peerData.country}` : ''}
-                ${peerData.city ? `Ville: ${peerData.city}` : ''}
-                <div>Images partagées: ${peerData.sharedImages || 0}</div>
-                <div>Page en cours: ${peerData.address || 'home'}</div>
-                ${peerData.connectionQuality ? `
-                    <div>Latence: ${Math.round(peerData.connectionQuality.latency)}ms</div>
-                    <div>Bande passante: ${Math.round(peerData.connectionQuality.bandwidth / 1000)}kbps</div>
-                ` : ''}
-            </div>
-        `;
-        peerList.appendChild(div);
-    });
-}
-
-// Mettre à jour la liste des pairs disponibles
-async function updateAvailablePeers() {
-    try {
-        const response = await fetch(`${config.discoveryServer.url}/peers`);
-        if (!response.ok) {
-            throw new Error('Erreur lors de la récupération des pairs');
-        }
-        const data = await response.json();
-        if (!data.success) {
-            throw new Error('Erreur serveur lors de la récupération des pairs');
-        }
-        
-        // Filtrer notre propre ID de la liste
-        availablePeers = data.peers.filter(peerData => peerData.peerId !== peer.id);
-        console.log('Liste des pairs mise à jour:', availablePeers);
-        updatePeerList();
-    } catch (error) {
-        console.error('Erreur lors de la mise à jour des pairs:', error);
-    }
-}
-
 // Initialiser la connexion P2P
 async function initializePeer() {
     return new Promise((resolve, reject) => {
@@ -627,17 +837,7 @@ async function initializePeer() {
                     connectToNextPeer();
                 } else {
                     updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
-                    // Vérifier régulièrement s'il y a de nouveaux pairs
-                    setInterval(async () => {
-                        await updateAvailablePeers();
-                        if (availablePeers.length > 0 && connections.size === 0) {
-                            connectToNextPeer();
-                        }
-                    }, 5000);
                 }
-
-                // Mettre à jour la liste des pairs toutes les 5 secondes
-                setInterval(updateAvailablePeers, 5000);
                 
                 resolve();
             });
@@ -684,6 +884,11 @@ async function initializePeer() {
                     console.log('Données du message:', message.data);
 
                     switch(message.type) {
+                        case 'ping':
+                            console.log('Ping reçu de', conn.peer);
+                            // Répondre immédiatement avec un pong
+                            conn.send(JSON.stringify({ type: 'pong' }));
+                            break;
                         case 'image':
                             console.log('=== RÉCEPTION D\'UNE IMAGE ===');
                             console.log('Source:', conn.peer);
@@ -751,6 +956,17 @@ async function initializePeer() {
             peer.on('error', (err) => {
                 console.error('Erreur PeerJS:', err);
                 updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
+                
+                // Si l'erreur est liée à une connexion échouée, supprimer le pair et essayer le suivant
+                if (err.message && err.message.includes('Could not connect to peer')) {
+                    const failedPeerId = err.message.split('Could not connect to peer ')[1];
+                    if (failedPeerId) {
+                        removeProblematicPeer(failedPeerId);
+                        console.log('Tentative de connexion au prochain pair après erreur...');
+                        connectToNextPeer();
+                    }
+                }
+                
                 reject(err);
             });
 
@@ -786,29 +1002,23 @@ async function loadTestImage() {
         console.log(`=== CHARGEMENT DE L'IMAGE ${selectedImage} ===`);
         console.log('Index actuel:', currentImageIndex);
 
-        // Si aucun pair n'est connecté, charger directement depuis le serveur
+        // Vérifier si nous avons une connexion active
         if (connections.size === 0) {
             console.log('Aucun pair connecté, chargement depuis le serveur');
-            const response = await fetch(selectedImage);
-            if (!response.ok) {
-                throw new Error(`Erreur HTTP: ${response.status}`);
-            }
-            
-            const blob = await response.blob();
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                loadingContainer.remove();
-                const imageData = reader.result;
-                console.log('Image chargée depuis le serveur, affichage en cours');
-                displayImage(imageData, `Image locale (${selectedImage})`, 'server');
-                currentImageIndex++;
-            };
-            reader.readAsDataURL(blob);
+            await loadImageFromServer(selectedImage, loadingContainer);
             return;
         }
 
         const currentPeerId = Array.from(connections.keys())[0];
         const conn = connections.get(currentPeerId);
+
+        // Vérifier si la connexion est toujours active
+        const isConnectionActive = await checkCurrentConnection();
+        if (!isConnectionActive) {
+            console.log('Connexion au pair perdue, chargement depuis le serveur');
+            await loadImageFromServer(selectedImage, loadingContainer);
+            return;
+        }
         
         try {
             // D'abord vérifier si le pair a l'image dans son cache
@@ -817,7 +1027,7 @@ async function loadTestImage() {
             const hasImage = await new Promise((resolve, reject) => {
                 const timeout = setTimeout(() => {
                     reject(new Error('Timeout lors de la vérification'));
-                }, 5000); // Augmenté à 5 secondes
+                }, 5000);
 
                 const messageHandler = (data) => {
                     console.log('Message reçu pendant la vérification:', data);
@@ -866,7 +1076,7 @@ async function loadTestImage() {
             const imageData = await new Promise((resolve, reject) => {
                 const timeout = setTimeout(() => {
                     reject(new Error('Timeout lors du chargement'));
-                }, 10000); // Augmenté à 10 secondes
+                }, 10000);
 
                 const messageHandler = (data) => {
                     console.log('Message reçu pendant le chargement:', data);
@@ -917,25 +1127,10 @@ async function loadTestImage() {
             return;
         } catch (error) {
             console.warn(`Échec de la récupération depuis le pair ${currentPeerId}:`, error);
+            // Si on a une erreur de communication, on charge depuis le serveur
+            console.log('Erreur de communication avec le pair, chargement depuis le serveur');
+            await loadImageFromServer(selectedImage, loadingContainer);
         }
-
-        // Si on arrive ici, c'est qu'on n'a pas pu charger depuis le pair
-        console.log(`Chargement de l'image ${selectedImage} depuis le serveur`);
-        const response = await fetch(selectedImage);
-        if (!response.ok) {
-            throw new Error(`Erreur HTTP: ${response.status}`);
-        }
-        
-        const blob = await response.blob();
-        const reader = new FileReader();
-        reader.onloadend = () => {
-            loadingContainer.remove();
-            const imageData = reader.result;
-            console.log('Image chargée depuis le serveur, affichage en cours');
-            displayImage(imageData, `Image locale (${selectedImage})`, 'server');
-            currentImageIndex++;
-        };
-        reader.readAsDataURL(blob);
     } catch (error) {
         loadingContainer.remove();
         const errorContainer = document.createElement('div');
@@ -945,11 +1140,37 @@ async function loadTestImage() {
     }
 }
 
+// Fonction utilitaire pour charger une image depuis le serveur
+async function loadImageFromServer(imagePath, loadingContainer) {
+    console.log(`Chargement de l'image ${imagePath} depuis le serveur`);
+    const response = await fetch(imagePath);
+    if (!response.ok) {
+        throw new Error(`Erreur HTTP: ${response.status}`);
+    }
+    
+    const blob = await response.blob();
+    const reader = new FileReader();
+    reader.onloadend = () => {
+        loadingContainer.remove();
+        const imageData = reader.result;
+        console.log('Image chargée depuis le serveur, affichage en cours');
+        displayImage(imageData, `Image locale (${imagePath})`, 'server');
+        currentImageIndex++;
+    };
+    reader.readAsDataURL(blob);
+}
+
 // Afficher une image
 function displayImage(imageData, status, source = 'server', peerId = null, cacheInfo = null) {
     // Utiliser le chemin de l'image comme partie de l'ID unique
     const imagePath = status.includes('(') ? status.match(/\((.*?)\)/)[1] : imageData;
-    const imageId = `${source}-${peerId || 'server'}-${imagePath}`;
+    
+    // Normaliser l'ID de l'image pour le cache
+    // Si l'image vient du serveur ou est mise en cache, utiliser un ID serveur
+    // Sinon, utiliser l'ID du pair source
+    const imageId = cacheInfo?.source === 'cache' || source === 'server' 
+        ? `server-server-${imagePath}`
+        : `peer-${peerId}-${imagePath}`;
     
     console.log('=== AFFICHAGE D\'UNE IMAGE ===');
     console.log('Détails:', {
@@ -1016,6 +1237,67 @@ function displayImage(imageData, status, source = 'server', peerId = null, cache
     document.getElementById('images-container').appendChild(container);
 }
 
+// Changer de pair
+function changePeer() {
+    if (availablePeers.length <= 1) {
+        console.log('Pas d\'autre pair disponible');
+        alert('Pas d\'autre pair disponible');
+        return;
+    }
+
+    console.log('Changement de pair demandé');
+    
+    // Si on a déjà une connexion, on la ferme
+    if (connections.size > 0) {
+        const currentConn = Array.from(connections.values())[0];
+        currentConn.close();
+    }
+
+    // Se connecter au prochain pair dans la liste
+    currentPeerIndex = (currentPeerIndex + 1) % availablePeers.length;
+    const nextPeer = availablePeers[currentPeerIndex];
+
+    if (!nextPeer || !nextPeer.peerId) {
+        console.log('Pair invalide');
+        updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
+        return;
+    }
+
+    try {
+        console.log(`Tentative de connexion au pair ${nextPeer.peerId}`);
+        updateConnectionStatus('connecting', `Tentative de connexion à ${nextPeer.peerId}...`);
+
+        const conn = peer.connect(nextPeer.peerId, { reliable: true });
+        
+        conn.on('open', () => {
+            console.log(`Connexion établie avec ${nextPeer.peerId}`);
+            connections.set(nextPeer.peerId, conn);
+            updateConnectionStatus('connected', `Connecté à ${nextPeer.peerId}`);
+            updatePeerList();
+        });
+
+        conn.on('close', () => {
+            console.log(`Connexion fermée avec ${nextPeer.peerId}`);
+            connections.delete(nextPeer.peerId);
+            peerImages.delete(nextPeer.peerId);
+            removeProblematicPeer(nextPeer.peerId);
+            updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
+        });
+
+        conn.on('error', (err) => {
+            console.error(`Erreur de connexion avec ${nextPeer.peerId}:`, err);
+            connections.delete(nextPeer.peerId);
+            peerImages.delete(nextPeer.peerId);
+            removeProblematicPeer(nextPeer.peerId);
+            updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
+        });
+    } catch (error) {
+        console.error(`Erreur lors de la connexion à ${nextPeer.peerId}:`, error);
+        removeProblematicPeer(nextPeer.peerId);
+        updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
+    }
+}
+
 // Mettre à jour l'indicateur d'état de connexion
 function updateConnectionStatus(status, message) {
     const statusContainer = document.querySelector('.connection-status');
@@ -1025,19 +1307,35 @@ function updateConnectionStatus(status, message) {
         container.innerHTML = `
             <div class="status-indicator ${status}"></div>
             <div class="status-text">${message}</div>
+            <button id="changePeerBtn" class="change-peer-btn" style="display: none;">Changer de pair</button>
         `;
         document.querySelector('.panel').insertBefore(container, document.getElementById('peerId').parentNode);
+        
+        // Ajouter l'écouteur d'événement pour le bouton
+        document.getElementById('changePeerBtn').addEventListener('click', () => {
+            changePeer();
+        });
     } else {
         const indicator = statusContainer.querySelector('.status-indicator');
         const text = statusContainer.querySelector('.status-text');
+        const changePeerBtn = statusContainer.querySelector('.change-peer-btn');
+        
         indicator.className = `status-indicator ${status}`;
         text.textContent = message;
+        
+        // Afficher le bouton uniquement si on est connecté à un pair
+        if (status === 'connected' && availablePeers.length > 1) {
+            changePeerBtn.style.display = 'block';
+        } else {
+            changePeerBtn.style.display = 'none';
+        }
     }
 }
 
 // Initialiser l'application
 document.addEventListener('DOMContentLoaded', () => {
     initializePeer();
+    startPeerUpdateInterval(); // Démarrer l'intervalle une seule fois au chargement de la page
     document.getElementById('loadImageBtn').addEventListener('click', loadTestImage);
     updateSharedImagesCount(); // Initialiser l'affichage du compteur
 

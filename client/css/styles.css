@@ -259,4 +259,25 @@ button {
     0% { transform: scale(1); }
     50% { transform: scale(1.1); }
     100% { transform: scale(1); }
+}
+
+.change-peer-btn {
+    margin-top: 10px;
+    padding: 5px 10px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background-color 0.3s;
+}
+
+.change-peer-btn:hover {
+    background-color: #45a049;
+}
+
+.change-peer-btn:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
 } 
