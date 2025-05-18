@@ -12,6 +12,11 @@ const config = {
         peerConnection: 10000,  // Timeout pour la connexion à un pair en ms
     },
     
+    // Configuration du cache
+    cache: {
+        duration: 24 * 60 * 60 * 1000 // 24 heures en millisecondes
+    },
+    
     // Configuration des chemins d'images
     images: {
         paths: [

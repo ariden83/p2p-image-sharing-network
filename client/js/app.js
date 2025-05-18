@@ -17,6 +17,9 @@ let peerUpdateInterval = null; // Variable pour suivre l'intervalle de mise à j
 // Stocker les images déjà affichées pour éviter les doublons
 const displayedImages = new Set();
 
+// Structure pour stocker les métadonnées du cache
+const imageCache = new Map(); // Map<imageId, {timestamp: number, data: string}>
+
 // Configuration
 const MAX_PEERS = 10; // Nombre maximum de pairs à garder en mémoire
 const RESET_INTERVAL = 10000; // Intervalle de réinitialisation en millisecondes
@@ -27,6 +30,16 @@ let lastResetTime = Date.now();
 
 // Cache pour la géolocalisation
 let cachedGeolocation = null;
+
+// Fonction pour vérifier si une image en cache est toujours valide
+function isCacheValid(imageId) {
+    const cacheEntry = imageCache.get(imageId);
+    if (!cacheEntry) return false;
+    
+    const now = Date.now();
+    const age = now - cacheEntry.timestamp;
+    return age < config.cache.duration;
+}
 
 // Nouvelle fonction pour charger la config dynamiquement
 async function loadConfig() {
@@ -710,20 +723,26 @@ function isImageAvailable(imagePath, peerId = null) {
     console.log('Vérification du cache pour:', {
         imagePath,
         peerId,
-        displayedImages: Array.from(displayedImages)
+        displayedImages: Array.from(displayedImages),
+        imageCache: Array.from(imageCache.entries())
     });
 
-    // Vérifier d'abord l'ID serveur (normalisé)
+    // Vérifier d'abord l'ID serveur
     const serverImageId = `server-server-${imagePath}`;
     console.log('Vérification de l\'ID serveur:', serverImageId);
+    
     if (displayedImages.has(serverImageId)) {
-        const img = document.querySelector(`[data-image-id="${serverImageId}"] img`);
-        if (img && img.src) {
-            console.log('Image trouvée dans le cache serveur et accessible');
+        if (isCacheValid(serverImageId)) {
+            console.log('Image trouvée dans le cache serveur et valide');
             return true;
         } else {
-            console.log('Image trouvée dans le cache serveur mais non accessible, suppression');
+            console.log('Image trouvée dans le cache serveur mais expirée, suppression');
             displayedImages.delete(serverImageId);
+            imageCache.delete(serverImageId);
+            const container = document.querySelector(`[data-image-id="${serverImageId}"]`);
+            if (container) {
+                container.remove();
+            }
         }
     }
 
@@ -731,33 +750,24 @@ function isImageAvailable(imagePath, peerId = null) {
     if (peerId) {
         const peerImageId = `peer-${peerId}-${imagePath}`;
         console.log('Vérification de l\'ID du pair:', peerImageId);
+        
         if (displayedImages.has(peerImageId)) {
-            const img = document.querySelector(`[data-image-id="${peerImageId}"] img`);
-            if (img && img.src) {
-                console.log('Image trouvée dans le cache du pair et accessible');
+            if (isCacheValid(peerImageId)) {
+                console.log('Image trouvée dans le cache du pair et valide');
                 return true;
             } else {
-                console.log('Image trouvée dans le cache du pair mais non accessible, suppression');
+                console.log('Image trouvée dans le cache du pair mais expirée, suppression');
                 displayedImages.delete(peerImageId);
+                imageCache.delete(peerImageId);
+                const container = document.querySelector(`[data-image-id="${peerImageId}"]`);
+                if (container) {
+                    container.remove();
+                }
             }
         }
     }
 
-    // Vérifier tous les IDs de pairs possibles
-    for (const id of displayedImages) {
-        if (id.startsWith('peer-') && id.endsWith(`-${imagePath}`)) {
-            const img = document.querySelector(`[data-image-id="${id}"] img`);
-            if (img && img.src) {
-                console.log(`Image trouvée dans le cache d'un autre pair (${id}) et accessible`);
-                return true;
-            } else {
-                console.log(`Image trouvée dans le cache d'un autre pair (${id}) mais non accessible, suppression`);
-                displayedImages.delete(id);
-            }
-        }
-    }
-
-    console.log('Image non trouvée dans le cache ou non accessible');
+    console.log('Image non trouvée dans le cache ou non valide');
     return false;
 }
 
@@ -1236,7 +1246,12 @@ async function loadImageFromServer(imagePath, loadingContainer) {
     try {
         // Utiliser le chemin complet depuis la racine du serveur
         const fullPath = imagePath.startsWith('/') ? imagePath : `/${imagePath}`;
-        const response = await fetch(fullPath);
+        const response = await fetch(fullPath, {
+            headers: {
+                'Cache-Control': `max-age=${config.cache.duration / 1000}`,
+                'Expires': new Date(Date.now() + config.cache.duration).toUTCString()
+            }
+        });
         if (!response.ok) {
             throw new Error(`Erreur HTTP: ${response.status}`);
         }
@@ -1274,12 +1289,7 @@ async function loadImageFromServer(imagePath, loadingContainer) {
 
 // Afficher une image
 function displayImage(imageData, status, source = 'server', peerId = null, cacheInfo = null) {
-    // Utiliser le chemin de l'image comme partie de l'ID unique
     const imagePath = status.includes('(') ? status.match(/\((.*?)\)/)[1] : imageData;
-    
-    // Normaliser l'ID de l'image pour le cache
-    // Si l'image vient du serveur ou est mise en cache, utiliser un ID serveur
-    // Sinon, utiliser l'ID du pair source
     const imageId = cacheInfo?.source === 'cache' || source === 'server' 
         ? `server-server-${imagePath}`
         : `peer-${peerId}-${imagePath}`;
@@ -1292,17 +1302,34 @@ function displayImage(imageData, status, source = 'server', peerId = null, cache
         imageId,
         cacheInfo,
         displayedImages: Array.from(displayedImages),
-        isDisplayed: displayedImages.has(imageId)
+        isDisplayed: displayedImages.has(imageId),
+        cacheValid: isCacheValid(imageId)
     });
     
+    // Vérifier si l'image est en cache et toujours valide
     if (displayedImages.has(imageId)) {
-        console.log(`Image ${imagePath} déjà affichée, on passe à la suivante`);
-        // Ne pas incrémenter ici, l'incrémentation se fera dans le finally de loadTestImage
-        return;
+        if (isCacheValid(imageId)) {
+            console.log(`Image ${imagePath} déjà affichée et cache valide, on passe à la suivante`);
+            return;
+        } else {
+            console.log(`Image ${imagePath} en cache mais expirée, on la recharge`);
+            displayedImages.delete(imageId);
+            imageCache.delete(imageId);
+            const container = document.querySelector(`[data-image-id="${imageId}"]`);
+            if (container) {
+                container.remove();
+            }
+        }
     }
     
+    // Ajouter l'image au cache avec le timestamp actuel
+    imageCache.set(imageId, {
+        timestamp: Date.now(),
+        data: imageData
+    });
     displayedImages.add(imageId);
-    console.log(`Ajout de l'image ${imagePath} à la liste des images affichées (ID: ${imageId})`);
+    
+    console.log(`Ajout de l'image ${imagePath} au cache (ID: ${imageId}, Timestamp: ${new Date().toLocaleString()})`);
 
     const container = document.createElement('div');
     container.className = 'image-container';
@@ -1316,35 +1343,40 @@ function displayImage(imageData, status, source = 'server', peerId = null, cache
         console.log('État du cache après chargement:', {
             imageId,
             isInCache: displayedImages.has(imageId),
+            cacheValid: isCacheValid(imageId),
+            timestamp: new Date(imageCache.get(imageId)?.timestamp).toLocaleString(),
             allImages: Array.from(displayedImages)
         });
     };
     img.onerror = (error) => {
         console.error(`Erreur lors du chargement de l'image ${imageId}:`, error);
         displayedImages.delete(imageId);
+        imageCache.delete(imageId);
         console.log('Image supprimée du cache à cause d\'une erreur');
     };
 
     const sourceDiv = document.createElement('div');
     sourceDiv.className = `image-source ${source}`;
     sourceDiv.textContent = source === 'server' ? 'Serveur' : `Pair: ${peerId}`;
-    
+
     const statusDiv = document.createElement('div');
     statusDiv.className = 'status';
     statusDiv.textContent = status;
 
-    // Ajouter un indicateur de cache uniquement si l'image vient du cache
-    if (cacheInfo && cacheInfo.source === 'cache') {
-        const cacheIndicator = document.createElement('div');
-        cacheIndicator.className = 'cache-indicator';
-        cacheIndicator.textContent = `Cache: ${cacheInfo.cacheId}`;
-        cacheIndicator.style.color = 'green';
-        container.appendChild(cacheIndicator);
+    // Ajouter un indicateur de cache avec l'heure d'expiration
+    const cacheEntry = imageCache.get(imageId);
+    const expirationTime = new Date(cacheEntry.timestamp + config.cache.duration);
+    const cacheDiv = document.createElement('div');
+    cacheDiv.className = 'cache-info';
+    cacheDiv.textContent = `Expire le ${expirationTime.toLocaleDateString()} à ${expirationTime.toLocaleTimeString()}`;
+    if (cacheInfo?.source === 'cache') {
+        cacheDiv.textContent += ` (Source: ${cacheInfo.source})`;
     }
 
     container.appendChild(img);
     container.appendChild(sourceDiv);
     container.appendChild(statusDiv);
+    container.appendChild(cacheDiv);
     
     document.getElementById('images-container').appendChild(container);
 }
