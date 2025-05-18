@@ -15,12 +15,12 @@ const config = {
     // Configuration des chemins d'images
     images: {
         paths: [
-            '/images/page1/image.png',
-            '/images/page1/image1.png',
-            '/images/page1/image2.png',
-            '/images/page1/image3.png',
-            '/images/page1/image4.png', 
-            '/images/page1/image5.png'
+            '/images/page2/image.png',
+            '/images/page2/image1.png',
+            '/images/page2/image2.png',
+            '/images/page2/image3.png',
+            '/images/page2/image4.png',
+            '/images/page2/image5.png'
         ]
     }
 };

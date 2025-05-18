@@ -1,9 +1,13 @@
-import config from './config.js';
+// SUPPRIMER ou commenter l'import statique :
+// import config from './config.js';
+
+let config; // sera chargé dynamiquement
+
+// Toutes les variables qui dépendent de config doivent être initialisées après le chargement
+let images;
 
 let peer = null;
 let connections = new Map();
-let peerImages = new Map();
-const images = config.images.paths; 
 let availablePeers = []; // Liste des pairs disponibles au démarrage
 let currentPeerIndex = 0; // Index du pair actuellement connecté
 let currentImageIndex = 0; // Index de l'image actuelle
@@ -23,6 +27,54 @@ let lastResetTime = Date.now();
 
 // Cache pour la géolocalisation
 let cachedGeolocation = null;
+
+// Nouvelle fonction pour charger la config dynamiquement
+async function loadConfig() {
+    const configPath = window.location.pathname.includes('page2') ? './config-page2.js' : './config.js';
+    config = (await import(`${configPath}?v=${Date.now()}`)).default;
+    images = config.images.paths;
+    initializeApp();
+}
+
+// Regroupe l'initialisation qui dépend de la config
+function initializeApp() {
+    initializePeer();
+    startPeerUpdateInterval();
+    document.getElementById('loadImageBtn').addEventListener('click', loadTestImage);
+    updateSharedImagesCount();
+    // ... (autres initialisations si besoin)
+
+    // Gestionnaires de nettoyage (inchangés)
+    let isDisconnecting = false;
+    async function cleanup() {
+        if (isDisconnecting) return;
+        isDisconnecting = true;
+        if (peer && peer.id) {
+            try {
+                connections.forEach(conn => conn.close());
+                connections.clear();
+                peerImages.clear();
+                await unregisterFromDiscoveryServer(peer.id);
+                peer.destroy();
+            } catch (error) {
+                console.error('Erreur lors de la fermeture:', error);
+            }
+        }
+    }
+    window.addEventListener('beforeunload', async (event) => {
+        if (!isDisconnecting) await cleanup();
+    });
+    document.addEventListener('visibilitychange', async () => {
+        if (document.visibilityState === 'hidden' && !isDisconnecting) await cleanup();
+    });
+    window.addEventListener('unload', () => {
+        if (!isDisconnecting) cleanup();
+    });
+}
+
+// Lancer le chargement de la config au chargement du DOM
+// (remplace l'ancien addEventListener)
+document.addEventListener('DOMContentLoaded', loadConfig);
 
 // Fonction pour démarrer l'intervalle de mise à jour des pairs
 function startPeerUpdateInterval() {
@@ -1143,7 +1195,9 @@ async function loadTestImage() {
 // Fonction utilitaire pour charger une image depuis le serveur
 async function loadImageFromServer(imagePath, loadingContainer) {
     console.log(`Chargement de l'image ${imagePath} depuis le serveur`);
-    const response = await fetch(imagePath);
+    // Utiliser le chemin complet depuis la racine du serveur
+    const fullPath = imagePath.startsWith('/') ? imagePath : `/${imagePath}`;
+    const response = await fetch(fullPath);
     if (!response.ok) {
         throw new Error(`Erreur HTTP: ${response.status}`);
     }
@@ -1308,7 +1362,7 @@ function updateConnectionStatus(status, message) {
             <div class="status-indicator ${status}"></div>
             <div class="status-text">${message}</div>
             <button id="changePeerBtn" class="change-peer-btn" style="display: none;">Changer de pair</button>
-        `;
+        `; 
         document.querySelector('.panel').insertBefore(container, document.getElementById('peerId').parentNode);
         
         // Ajouter l'écouteur d'événement pour le bouton
@@ -1330,69 +1384,4 @@ function updateConnectionStatus(status, message) {
             changePeerBtn.style.display = 'none';
         }
     }
-}
-
-// Initialiser l'application
-document.addEventListener('DOMContentLoaded', () => {
-    initializePeer();
-    startPeerUpdateInterval(); // Démarrer l'intervalle une seule fois au chargement de la page
-    document.getElementById('loadImageBtn').addEventListener('click', loadTestImage);
-    updateSharedImagesCount(); // Initialiser l'affichage du compteur
-
-    // Variable pour suivre si la déconnexion est en cours
-    let isDisconnecting = false;
-
-    // Fonction de déconnexion propre
-    async function cleanup() {
-        if (isDisconnecting) return;
-        isDisconnecting = true;
-
-        console.log('Début du nettoyage');
-        if (peer && peer.id) {
-            try {
-                // Fermer toutes les connexions P2P
-                connections.forEach(conn => {
-                    console.log('Fermeture de la connexion avec:', conn.peer);
-                    conn.close();
-                });
-                connections.clear();
-                peerImages.clear();
-
-                // Se désinscrire du serveur de découverte
-                console.log('Envoi de la notification de désinscription');
-                await unregisterFromDiscoveryServer(peer.id);
-                
-                // Fermer la connexion PeerJS
-                console.log('Destruction de la connexion PeerJS');
-                peer.destroy();
-            } catch (error) {
-                console.error('Erreur lors de la fermeture:', error);
-            }
-        }
-        console.log('Fin du nettoyage');
-    }
-
-    // Gestionnaire pour beforeunload
-    window.addEventListener('beforeunload', async (event) => {
-        console.log('Événement beforeunload déclenché');
-        if (!isDisconnecting) {
-            await cleanup();
-        }
-    });
-
-    // Gestionnaire pour visibilitychange
-    document.addEventListener('visibilitychange', async () => {
-        if (document.visibilityState === 'hidden' && !isDisconnecting) {
-            console.log('Événement visibilitychange déclenché');
-            await cleanup();
-        }
-    });
-
-    // Gestionnaire pour unload
-    window.addEventListener('unload', () => {
-        console.log('Événement unload déclenché');
-        if (!isDisconnecting) {
-            cleanup();
-        }
-    });
-}); 
+} 

@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const app = express();
 const port = process.env.PORT || 3001;
 
@@ -16,6 +17,9 @@ let lastResetTime = Date.now();
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// Servir les fichiers statiques
+app.use(express.static(path.join(__dirname, '../client')));
 
 // Fonction pour mettre à jour la liste des meilleurs pairs
 function updateBestPeers(newPeer) {
