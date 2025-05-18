@@ -8,6 +8,7 @@ let images;
 
 let peer = null;
 let connections = new Map();
+let peerImages = new Map(); // Map pour stocker les images disponibles par pair
 let availablePeers = []; // Liste des pairs disponibles au démarrage
 let currentPeerIndex = 0; // Index du pair actuellement connecté
 let currentImageIndex = 0; // Index de l'image actuelle
@@ -23,6 +24,7 @@ const imageCache = new Map(); // Map<imageId, {timestamp: number, data: string}>
 // Configuration
 const MAX_PEERS = 10; // Nombre maximum de pairs à garder en mémoire
 const RESET_INTERVAL = 10000; // Intervalle de réinitialisation en millisecondes
+const CACHE_DURATION = 24 * 60 * 60; // Durée du cache en secondes (24 heures)
 
 // Liste en mémoire des meilleurs pairs
 let bestPeers = [];
@@ -32,13 +34,38 @@ let lastResetTime = Date.now();
 let cachedGeolocation = null;
 
 // Fonction pour vérifier si une image en cache est toujours valide
-function isCacheValid(imageId) {
+async function isCacheValid(imageId) {
     const cacheEntry = imageCache.get(imageId);
     if (!cacheEntry) return false;
     
-    const now = Date.now();
-    const age = now - cacheEntry.timestamp;
-    return age < config.cache.duration;
+    try {
+        // Récupérer les headers de cache de l'image
+        const response = await fetch(cacheEntry.data);
+        const cacheControl = response.headers.get('Cache-Control');
+        const expires = response.headers.get('Expires');
+        
+        // Si on a un header Expires, vérifier la date
+        if (expires) {
+            const expirationDate = new Date(expires);
+            return Date.now() < expirationDate.getTime();
+        }
+        
+        // Si on a un header Cache-Control avec max-age
+        if (cacheControl) {
+            const maxAgeMatch = cacheControl.match(/max-age=(\d+)/);
+            if (maxAgeMatch) {
+                const maxAge = parseInt(maxAgeMatch[1]);
+                const age = (Date.now() - cacheEntry.timestamp) / 1000; // Convertir en secondes
+                return age < maxAge;
+            }
+        }
+        
+        // Si aucun header de cache n'est trouvé, considérer le cache comme invalide
+        return false;
+    } catch (error) {
+        console.error('Erreur lors de la vérification du cache:', error);
+        return false;
+    }
 }
 
 // Nouvelle fonction pour charger la config dynamiquement
@@ -802,11 +829,21 @@ async function handleImageRequest(conn, imagePath) {
                 console.log('Source de l\'image:', img.src);
                 sharedImagesCount++; // Incrémenter le compteur
                 updateSharedImagesCount(); // Mettre à jour l'affichage
+                
+                // Récupérer les headers de cache de l'image
+                const response = await fetch(img.src);
+                const cacheControl = response.headers.get('Cache-Control');
+                const expires = response.headers.get('Expires');
+                
                 conn.send({
                     type: 'image',
                     data: img.src,
                     source: 'cache',
-                    cacheId: serverImageId
+                    cacheId: serverImageId,
+                    cacheHeaders: {
+                        'Cache-Control': cacheControl,
+                        'Expires': expires
+                    }
                 });
                 return;
             } else {
@@ -826,11 +863,21 @@ async function handleImageRequest(conn, imagePath) {
                 console.log('Source de l\'image:', img.src);
                 sharedImagesCount++; // Incrémenter le compteur
                 updateSharedImagesCount(); // Mettre à jour l'affichage
+                
+                // Récupérer les headers de cache de l'image
+                const response = await fetch(img.src);
+                const cacheControl = response.headers.get('Cache-Control');
+                const expires = response.headers.get('Expires');
+                
                 conn.send({
                     type: 'image',
                     data: img.src,
                     source: 'cache',
-                    cacheId: peerImageId
+                    cacheId: peerImageId,
+                    cacheHeaders: {
+                        'Cache-Control': cacheControl,
+                        'Expires': expires
+                    }
                 });
                 return;
             } else {
@@ -841,10 +888,16 @@ async function handleImageRequest(conn, imagePath) {
 
         console.log(`Image ${imagePath} non disponible dans le cache, chargement depuis le serveur`);
         // Si l'image n'est pas dans le cache, la charger depuis le serveur
-        const response = await fetch(imagePath);
+        const response = await fetch(imagePath, {
+            headers: {
+                'Cache-Control': `max-age=${CACHE_DURATION}`,
+                'Expires': new Date(Date.now() + CACHE_DURATION * 1000).toUTCString()
+            }
+        });
         if (!response.ok) {
             throw new Error(`Erreur HTTP: ${response.status}`);
         }
+        
         const blob = await response.blob();
         const reader = new FileReader();
         reader.onloadend = () => {
@@ -852,11 +905,16 @@ async function handleImageRequest(conn, imagePath) {
             console.log('Image chargée depuis le serveur, envoi en cours');
             sharedImagesCount++; // Incrémenter le compteur
             updateSharedImagesCount(); // Mettre à jour l'affichage
+            
             conn.send({
                 type: 'image',
                 data: imageData,
                 source: 'server',
-                path: imagePath
+                path: imagePath,
+                cacheHeaders: {
+                    'Cache-Control': response.headers.get('Cache-Control'),
+                    'Expires': response.headers.get('Expires')
+                }
             });
         };
         reader.readAsDataURL(blob);
@@ -1248,8 +1306,8 @@ async function loadImageFromServer(imagePath, loadingContainer) {
         const fullPath = imagePath.startsWith('/') ? imagePath : `/${imagePath}`;
         const response = await fetch(fullPath, {
             headers: {
-                'Cache-Control': `max-age=${config.cache.duration / 1000}`,
-                'Expires': new Date(Date.now() + config.cache.duration).toUTCString()
+                'Cache-Control': `max-age=${CACHE_DURATION}`,
+                'Expires': new Date(Date.now() + CACHE_DURATION * 1000).toUTCString()
             }
         });
         if (!response.ok) {
@@ -1288,7 +1346,7 @@ async function loadImageFromServer(imagePath, loadingContainer) {
 }
 
 // Afficher une image
-function displayImage(imageData, status, source = 'server', peerId = null, cacheInfo = null) {
+async function displayImage(imageData, status, source = 'server', peerId = null, cacheInfo = null) {
     const imagePath = status.includes('(') ? status.match(/\((.*?)\)/)[1] : imageData;
     const imageId = cacheInfo?.source === 'cache' || source === 'server' 
         ? `server-server-${imagePath}`
@@ -1302,13 +1360,13 @@ function displayImage(imageData, status, source = 'server', peerId = null, cache
         imageId,
         cacheInfo,
         displayedImages: Array.from(displayedImages),
-        isDisplayed: displayedImages.has(imageId),
-        cacheValid: isCacheValid(imageId)
+        isDisplayed: displayedImages.has(imageId)
     });
     
     // Vérifier si l'image est en cache et toujours valide
     if (displayedImages.has(imageId)) {
-        if (isCacheValid(imageId)) {
+        const isValid = await isCacheValid(imageId);
+        if (isValid) {
             console.log(`Image ${imagePath} déjà affichée et cache valide, on passe à la suivante`);
             return;
         } else {
@@ -1338,12 +1396,13 @@ function displayImage(imageData, status, source = 'server', peerId = null, cache
     const img = document.createElement('img');
     img.src = imageData;
     img.alt = 'Image partagée';
-    img.onload = () => {
+    img.onload = async () => {
         console.log(`Image ${imageId} chargée avec succès`);
+        const isValid = await isCacheValid(imageId);
         console.log('État du cache après chargement:', {
             imageId,
             isInCache: displayedImages.has(imageId),
-            cacheValid: isCacheValid(imageId),
+            cacheValid: isValid,
             timestamp: new Date(imageCache.get(imageId)?.timestamp).toLocaleString(),
             allImages: Array.from(displayedImages)
         });
@@ -1359,24 +1418,16 @@ function displayImage(imageData, status, source = 'server', peerId = null, cache
     sourceDiv.className = `image-source ${source}`;
     sourceDiv.textContent = source === 'server' ? 'Serveur' : `Pair: ${peerId}`;
 
+    // Calculer la date d'expiration
+    const expirationDate = new Date(Date.now() + CACHE_DURATION * 1000);
+
     const statusDiv = document.createElement('div');
     statusDiv.className = 'status';
-    statusDiv.textContent = status;
-
-    // Ajouter un indicateur de cache avec l'heure d'expiration
-    const cacheEntry = imageCache.get(imageId);
-    const expirationTime = new Date(cacheEntry.timestamp + config.cache.duration);
-    const cacheDiv = document.createElement('div');
-    cacheDiv.className = 'cache-info';
-    cacheDiv.textContent = `Expire le ${expirationTime.toLocaleDateString()} à ${expirationTime.toLocaleTimeString()}`;
-    if (cacheInfo?.source === 'cache') {
-        cacheDiv.textContent += ` (Source: ${cacheInfo.source})`;
-    }
+    statusDiv.textContent = `${status} (Expire le ${expirationDate.toLocaleDateString()} à ${expirationDate.toLocaleTimeString()})`;
 
     container.appendChild(img);
     container.appendChild(sourceDiv);
     container.appendChild(statusDiv);
-    container.appendChild(cacheDiv);
     
     document.getElementById('images-container').appendChild(container);
 }
