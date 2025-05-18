@@ -5,10 +5,13 @@ const app = express();
 const port = process.env.PORT || 3001;
 
 // Configuration
-const MAX_PEERS = 10;
-const RESET_INTERVAL = 60000;    // 1 minute au lieu de 10 secondes
-const HEARTBEAT_TIMEOUT = 30000; // 30 secondes au lieu de 5 secondes
-const CLEANUP_INTERVAL = 15000;  // 15 secondes au lieu de 5 secondes
+const config = {
+    MAX_PEERS: 10,
+    RESET_INTERVAL: 60000,    // 1 minute
+    HEARTBEAT_TIMEOUT: 30000, // 30 secondes
+    CLEANUP_INTERVAL: 15000,  // 15 secondes
+    MIN_ACTIVE_PEERS: 2       // Nombre minimum de pairs actifs requis
+};
 
 // Liste en mémoire des meilleurs pairs
 let bestPeers = [];
@@ -26,10 +29,8 @@ function updateBestPeers(newPeer) {
     const now = Date.now();
     
     // Vérifier si on doit réinitialiser la liste
-    if (now - lastResetTime >= RESET_INTERVAL) {
-        console.log('Réinitialisation de la liste des meilleurs pairs');
-        console.log('Nombre de pairs avant réinitialisation:', bestPeers.length);
-        bestPeers = [];
+    if (now - lastResetTime >= config.RESET_INTERVAL) {
+        resetBestPeers();
         lastResetTime = now;
     }
 
@@ -56,9 +57,30 @@ function updateBestPeers(newPeer) {
     });
 
     // Garder seulement les meilleurs pairs
-    bestPeers = bestPeers.slice(0, MAX_PEERS);
+    bestPeers = bestPeers.slice(0, config.MAX_PEERS);
     
     console.log('Liste des meilleurs pairs mise à jour:', bestPeers.map(p => p.peerId));
+}
+
+// Nouvelle fonction pour réinitialiser la liste des meilleurs pairs
+function resetBestPeers() {
+    const now = Date.now();
+    const activePeers = bestPeers.filter(peer => {
+        const lastUpdate = peer.timestamp || 0;
+        const isActive = now - lastUpdate < config.HEARTBEAT_TIMEOUT;
+        const quality = peer.connectionQuality || { latency: Infinity, bandwidth: 0 };
+        const isGoodQuality = quality.latency <= 500 && quality.bandwidth >= 1000;
+        return isActive && isGoodQuality;
+    });
+
+    if (activePeers.length > config.MIN_ACTIVE_PEERS) {
+        // Supprimer les 20% les moins performants
+        const removeCount = Math.ceil(activePeers.length * 0.2);
+        bestPeers = activePeers.slice(0, activePeers.length - removeCount);
+        console.log(`Réinitialisation partielle : ${removeCount} pairs supprimés`);
+    } else {
+        console.log('Pas assez de pairs actifs pour réinitialiser');
+    }
 }
 
 // Nettoyer les pairs inactifs
@@ -68,7 +90,7 @@ function cleanupInactivePeers() {
     
     bestPeers = bestPeers.filter(peer => {
         const lastUpdate = peer.timestamp || 0;
-        const isActive = now - lastUpdate < HEARTBEAT_TIMEOUT;
+        const isActive = now - lastUpdate < config.HEARTBEAT_TIMEOUT;
         if (!isActive) {
             console.log(`Pair ${peer.peerId} marqué comme inactif (dernière mise à jour: ${Math.round((now - lastUpdate) / 1000)}s)`);
         }
@@ -115,26 +137,12 @@ app.post('/unregister', (req, res) => {
 
 // Endpoint pour obtenir la liste des pairs
 app.get('/peers', (req, res) => {
-    cleanupInactivePeers();
-    console.log(`Liste des pairs demandée. ${bestPeers.length} pairs disponibles`);
-    console.log('Détails des pairs:', JSON.stringify(bestPeers, null, 2));
-    
-    // S'assurer que chaque pair a les champs requis
-    const formattedPeers = bestPeers.map(peer => ({
-        peerId: peer.peerId,
-        connectionQuality: peer.connectionQuality || { latency: Infinity, bandwidth: 0 },
-        timestamp: peer.timestamp,
-        sharedImages: peer.sharedImages || 0,
-        city: peer.city || 'Unknown',
-        country: peer.country || 'Unknown',
-        address: peer.address || 'home'
-    }));
-
-    res.json({
-        success: true,
-        count: formattedPeers.length,
-        peers: formattedPeers
+    const currentPath = req.query.path || '';
+    const isPage2 = currentPath.includes('page2');
+    const filteredPeers = bestPeers.filter(peer => {
+        return peer.address && peer.address.includes(isPage2 ? 'page2' : 'page1');
     });
+    res.json({ success: true, peers: filteredPeers });
 });
 
 // Endpoint pour le test de ping
@@ -155,7 +163,7 @@ app.get('/stats', (req, res) => {
     success: true,
     uptime: process.uptime(),
     activePeers: bestPeers.length,
-    maxPeers: MAX_PEERS,
+    maxPeers: config.MAX_PEERS,
     lastReset: lastResetTime
   });
 });
@@ -175,13 +183,14 @@ app.use((err, req, res, next) => {
 const server = app.listen(port, () => {
     console.log(`Serveur de découverte démarré sur le port ${port}`);
     console.log('Configuration:');
-    console.log(`- MAX_PEERS: ${MAX_PEERS}`);
-    console.log(`- RESET_INTERVAL: ${RESET_INTERVAL}ms`);
-    console.log(`- HEARTBEAT_TIMEOUT: ${HEARTBEAT_TIMEOUT}ms`);
-    console.log(`- CLEANUP_INTERVAL: ${CLEANUP_INTERVAL}ms`);
+    console.log(`- MAX_PEERS: ${config.MAX_PEERS}`);
+    console.log(`- RESET_INTERVAL: ${config.RESET_INTERVAL}ms`);
+    console.log(`- HEARTBEAT_TIMEOUT: ${config.HEARTBEAT_TIMEOUT}ms`);
+    console.log(`- CLEANUP_INTERVAL: ${config.CLEANUP_INTERVAL}ms`);
+    console.log(`- MIN_ACTIVE_PEERS: ${config.MIN_ACTIVE_PEERS}`);
     
     // Nettoyer les pairs inactifs périodiquement
-    setInterval(cleanupInactivePeers, CLEANUP_INTERVAL);
+    setInterval(cleanupInactivePeers, config.CLEANUP_INTERVAL);
 });
 
 // Gestion gracieuse de l'arrêt

@@ -349,8 +349,13 @@ async function updateAvailablePeers() {
             throw new Error('Erreur serveur lors de la récupération des pairs');
         }
         
-        // Filtrer notre propre ID de la liste
-        const newPeers = data.peers.filter(peerData => peerData.peerId !== peer.id);
+        // Filtrer notre propre ID et les pairs selon la page courante
+        const currentPage = window.location.pathname.includes('page2') ? 'page2' : 'page1';
+        const newPeers = data.peers.filter(peerData => 
+            peerData.peerId !== peer.id && 
+            peerData.address && 
+            peerData.address.includes(currentPage)
+        );
         
         // Mettre à jour la liste des pairs disponibles
         availablePeers = newPeers;
