@@ -39,20 +39,19 @@ async function isCacheValid(imageId) {
     if (!cacheEntry) return false;
     
     try {
-        // Récupérer les headers de cache de l'image
-        const response = await fetch(cacheEntry.data);
-        const cacheControl = response.headers.get('Cache-Control');
-        const expires = response.headers.get('Expires');
-        
+        // Utiliser les headers de cache stockés
+        const cacheHeaders = cacheEntry.cacheHeaders;
+        if (!cacheHeaders) return false;
+
         // Si on a un header Expires, vérifier la date
-        if (expires) {
-            const expirationDate = new Date(expires);
+        if (cacheHeaders.Expires) {
+            const expirationDate = new Date(cacheHeaders.Expires);
             return Date.now() < expirationDate.getTime();
         }
         
         // Si on a un header Cache-Control avec max-age
-        if (cacheControl) {
-            const maxAgeMatch = cacheControl.match(/max-age=(\d+)/);
+        if (cacheHeaders['Cache-Control']) {
+            const maxAgeMatch = cacheHeaders['Cache-Control'].match(/max-age=(\d+)/);
             if (maxAgeMatch) {
                 const maxAge = parseInt(maxAgeMatch[1]);
                 const age = (Date.now() - cacheEntry.timestamp) / 1000; // Convertir en secondes
@@ -135,19 +134,23 @@ function startPeerUpdateInterval() {
             // Vérifier si la connexion actuelle est toujours active
             const isConnectionActive = await checkCurrentConnection();
             if (!isConnectionActive) {
-                console.log('Connexion actuelle perdue, tentative de connexion à un nouveau pair...');
-                const currentConn = Array.from(connections.values())[0];
-                if (currentConn) {
-                    currentConn.close();
-                }
-                if (availablePeers.length > 0) {
-                    console.log('Pairs disponibles, tentative de connexion...');
-                    currentPeerIndex = -1;
-                    connectToNextPeer();
+                // Vérifier une seconde fois avant de fermer la connexion
+                const secondCheck = await checkCurrentConnection();
+                if (!secondCheck) {
+                    console.log('Connexion actuelle perdue après double vérification, tentative de connexion à un nouveau pair...');
+                    const currentConn = Array.from(connections.values())[0];
+                    if (currentConn) {
+                        currentConn.close();
+                    }
+                    if (availablePeers.length > 0) {
+                        console.log('Pairs disponibles, tentative de connexion...');
+                        currentPeerIndex = -1;
+                        connectToNextPeer();
+                    }
                 }
             }
         }
-    }, 5000);
+    }, 10000); // Augmenter l'intervalle à 10 secondes
 }
 
 // Obtenir la liste des pairs connus
@@ -418,7 +421,7 @@ async function checkCurrentConnection() {
         const response = await new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
                 reject(new Error('Timeout lors de la vérification de la connexion'));
-            }, 5000);
+            }, 15000); // Augmenter le timeout à 15 secondes
 
             const messageHandler = (data) => {
                 let message;
@@ -451,7 +454,8 @@ async function checkCurrentConnection() {
         return response;
     } catch (error) {
         console.error('Erreur lors de la vérification de la connexion:', error);
-        return false;
+        // Ne pas considérer immédiatement la connexion comme perdue en cas d'erreur
+        return true;
     }
 }
 
@@ -653,9 +657,8 @@ async function connectToNextPeer() {
     if (!nextPeer || !nextPeer.peerId) {
         console.log('Pair invalide, mise à jour de la liste des pairs...');
         await updateAvailablePeers();
-        if (availablePeers.length > 0) {
-            connectToNextPeer();
-        } else {
+        // Ne pas appeler connectToNextPeer() ici pour éviter la boucle infinie
+        if (availablePeers.length === 0) {
             updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
         }
         return;
@@ -690,7 +693,7 @@ async function connectToNextPeer() {
             // Vérifier immédiatement s'il y a d'autres pairs disponibles
             if (availablePeers.length > 0) {
                 console.log('Tentative de connexion à un autre pair après fermeture...');
-                connectToNextPeer();
+                setTimeout(() => connectToNextPeer(), 1000); // Ajouter un délai pour éviter les appels trop rapides
             } else {
                 updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
                 // Vérifier à nouveau dans 5 secondes
@@ -712,7 +715,7 @@ async function connectToNextPeer() {
             // Vérifier immédiatement s'il y a d'autres pairs disponibles
             if (availablePeers.length > 0) {
                 console.log('Tentative de connexion à un autre pair après erreur...');
-                connectToNextPeer();
+                setTimeout(() => connectToNextPeer(), 1000); // Ajouter un délai pour éviter les appels trop rapides
             } else {
                 updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
                 // Vérifier à nouveau dans 5 secondes
@@ -731,7 +734,7 @@ async function connectToNextPeer() {
         // Vérifier immédiatement s'il y a d'autres pairs disponibles
         if (availablePeers.length > 0) {
             console.log('Tentative de connexion à un autre pair après erreur...');
-            connectToNextPeer();
+            setTimeout(() => connectToNextPeer(), 1000); // Ajouter un délai pour éviter les appels trop rapides
         } else {
             updateConnectionStatus('network', 'Connecté au réseau, en attente de pair...');
             // Vérifier à nouveau dans 5 secondes
@@ -830,21 +833,23 @@ async function handleImageRequest(conn, imagePath) {
                 sharedImagesCount++; // Incrémenter le compteur
                 updateSharedImagesCount(); // Mettre à jour l'affichage
                 
-                // Récupérer les headers de cache de l'image
-                const response = await fetch(img.src);
-                const cacheControl = response.headers.get('Cache-Control');
-                const expires = response.headers.get('Expires');
+                // Récupérer les headers de cache de l'image depuis le cache local
+                const cacheEntry = imageCache.get(serverImageId);
+                const cacheHeaders = cacheEntry?.cacheHeaders || {
+                    'Cache-Control': `max-age=${CACHE_DURATION}`,
+                    'Expires': new Date(Date.now() + CACHE_DURATION * 1000).toUTCString()
+                };
                 
-                conn.send({
+                const message = {
                     type: 'image',
                     data: img.src,
                     source: 'cache',
                     cacheId: serverImageId,
-                    cacheHeaders: {
-                        'Cache-Control': cacheControl,
-                        'Expires': expires
-                    }
-                });
+                    cacheHeaders: cacheHeaders
+                };
+                
+                console.log('Envoi du message avec headers de cache:', message);
+                conn.send(JSON.stringify(message));
                 return;
             } else {
                 console.log('Image trouvée dans le cache serveur mais non accessible, suppression');
@@ -864,21 +869,23 @@ async function handleImageRequest(conn, imagePath) {
                 sharedImagesCount++; // Incrémenter le compteur
                 updateSharedImagesCount(); // Mettre à jour l'affichage
                 
-                // Récupérer les headers de cache de l'image
-                const response = await fetch(img.src);
-                const cacheControl = response.headers.get('Cache-Control');
-                const expires = response.headers.get('Expires');
+                // Récupérer les headers de cache de l'image depuis le cache local
+                const cacheEntry = imageCache.get(peerImageId);
+                const cacheHeaders = cacheEntry?.cacheHeaders || {
+                    'Cache-Control': `max-age=${CACHE_DURATION}`,
+                    'Expires': new Date(Date.now() + CACHE_DURATION * 1000).toUTCString()
+                };
                 
-                conn.send({
+                const message = {
                     type: 'image',
                     data: img.src,
                     source: 'cache',
                     cacheId: peerImageId,
-                    cacheHeaders: {
-                        'Cache-Control': cacheControl,
-                        'Expires': expires
-                    }
-                });
+                    cacheHeaders: cacheHeaders
+                };
+                
+                console.log('Envoi du message avec headers de cache:', message);
+                conn.send(JSON.stringify(message));
                 return;
             } else {
                 console.log('Image trouvée dans le cache du pair mais non accessible, suppression');
@@ -898,6 +905,10 @@ async function handleImageRequest(conn, imagePath) {
             throw new Error(`Erreur HTTP: ${response.status}`);
         }
         
+        // Récupérer les headers de cache de la réponse du serveur
+        const cacheControl = response.headers.get('Cache-Control');
+        const expires = response.headers.get('Expires');
+        
         const blob = await response.blob();
         const reader = new FileReader();
         reader.onloadend = () => {
@@ -906,24 +917,27 @@ async function handleImageRequest(conn, imagePath) {
             sharedImagesCount++; // Incrémenter le compteur
             updateSharedImagesCount(); // Mettre à jour l'affichage
             
-            conn.send({
+            const message = {
                 type: 'image',
                 data: imageData,
                 source: 'server',
                 path: imagePath,
                 cacheHeaders: {
-                    'Cache-Control': response.headers.get('Cache-Control'),
-                    'Expires': response.headers.get('Expires')
+                    'Cache-Control': cacheControl || `max-age=${CACHE_DURATION}`,
+                    'Expires': expires || new Date(Date.now() + CACHE_DURATION * 1000).toUTCString()
                 }
-            });
+            };
+            
+            console.log('Envoi du message avec headers de cache:', message);
+            conn.send(JSON.stringify(message));
         };
         reader.readAsDataURL(blob);
     } catch (error) {
         console.error('Erreur lors de l\'envoi de l\'image:', error);
-        conn.send({
+        conn.send(JSON.stringify({
             type: 'image_error',
             data: `Erreur lors du chargement: ${error.message}`
-        });
+        }));
     }
 }
 
@@ -1015,11 +1029,17 @@ async function initializePeer() {
                             console.log('Source:', conn.peer);
                             console.log('Données reçues:', message.data);
                             console.log('Informations de cache:', message.source, message.cacheId || message.path);
-                            displayImage(message.data, `Image reçue de ${conn.peer}`, 'peer', conn.peer, {
+                            console.log('Headers de cache reçus:', message.cacheHeaders);
+                            
+                            // Créer l'objet cacheInfo avec toutes les informations nécessaires
+                            const cacheInfo = {
                                 source: message.source || 'peer',
                                 cacheId: message.cacheId,
-                                path: message.path
-                            });
+                                path: message.path,
+                                cacheHeaders: message.cacheHeaders
+                            };
+                            
+                            displayImage(message.data, `Image reçue de ${conn.peer}`, 'peer', conn.peer, cacheInfo);
                             break;
                         case 'image_list':
                             console.log(`Liste d'images reçue de ${conn.peer}:`, message.data);
@@ -1115,7 +1135,6 @@ async function loadTestImage() {
     const loadingContainer = document.createElement('div');
     loadingContainer.className = 'image-container loading';
     imagesContainer.appendChild(loadingContainer);
-    console.log('Chargement de l\'image de test **************************************************** ' + currentImageIndex);
 
     try {
         if (currentImageIndex >= images.length) {
@@ -1174,8 +1193,6 @@ async function loadTestImage() {
                         return;
                     }
 
-                    console.log('Message parsé:', message);
-
                     if (message.type === 'image_availability') {
                         clearTimeout(timeout);
                         conn.removeListener('data', messageHandler);
@@ -1189,7 +1206,6 @@ async function loadTestImage() {
                     type: 'check_image',
                     data: selectedImage
                 };
-                console.log('Envoi de la demande de vérification:', checkMessage);
                 conn.send(JSON.stringify(checkMessage));
             });
 
@@ -1197,7 +1213,6 @@ async function loadTestImage() {
                 console.log(`Le pair ${currentPeerId} n'a pas l'image ${selectedImage} dans son cache`);
                 // Charger l'image depuis le serveur
                 await loadImageFromServer(selectedImage, loadingContainer);
-                console.log('Chargement depuis le serveur terminé');
                 
                 // Mettre à jour la liste des pairs disponibles
                 await updateAvailablePeers();
@@ -1218,7 +1233,6 @@ async function loadTestImage() {
                 }, 10000);
 
                 const messageHandler = (data) => {
-                    console.log('Message reçu pendant le chargement:', data);
                     let message;
                     try {
                         if (data instanceof ArrayBuffer) {
@@ -1241,7 +1255,7 @@ async function loadTestImage() {
                         clearTimeout(timeout);
                         conn.removeListener('data', messageHandler);
                         console.log('Image reçue du pair');
-                        resolve(message.data);
+                        resolve(message);
                     } else if (message.type === 'image_error') {
                         clearTimeout(timeout);
                         conn.removeListener('data', messageHandler);
@@ -1255,13 +1269,12 @@ async function loadTestImage() {
                     type: 'request_image',
                     data: selectedImage
                 };
-                console.log('Envoi de la demande d\'image:', requestMessage);
                 conn.send(JSON.stringify(requestMessage));
             });
 
             loadingContainer.remove();
             console.log('Affichage de l\'image reçue du pair');
-            displayImage(imageData, `Image reçue de ${currentPeerId} (${selectedImage})`, 'peer', currentPeerId);
+            displayImage(imageData.data, `Image reçue de ${currentPeerId} (${selectedImage})`, 'peer', currentPeerId, imageData.cacheHeaders);
             console.log('Chargement depuis le pair terminé');
             return;
         } catch (error) {
@@ -1287,7 +1300,6 @@ async function loadTestImage() {
         errorContainer.textContent = `Erreur: ${error.message}`;
         imagesContainer.appendChild(errorContainer);
     } finally {
-        console.log('finally **************************************************** ' + currentImageIndex);
         // Incrémenter l'index une seule fois à la fin de la fonction
         currentImageIndex++;
         console.log('=== FIN LOAD TEST IMAGE ===');
@@ -1346,9 +1358,9 @@ async function loadImageFromServer(imagePath, loadingContainer) {
 }
 
 // Afficher une image
-async function displayImage(imageData, status, source = 'server', peerId = null, cacheInfo = null) {
+async function displayImage(imageData, status, source = 'server', peerId = null, cacheHeaders = null) {
     const imagePath = status.includes('(') ? status.match(/\((.*?)\)/)[1] : imageData;
-    const imageId = cacheInfo?.source === 'cache' || source === 'server' 
+    const imageId = source === 'server' 
         ? `server-server-${imagePath}`
         : `peer-${peerId}-${imagePath}`;
     
@@ -1358,7 +1370,7 @@ async function displayImage(imageData, status, source = 'server', peerId = null,
         source,
         peerId,
         imageId,
-        cacheInfo,
+        cacheHeaders: cacheHeaders,
         displayedImages: Array.from(displayedImages),
         isDisplayed: displayedImages.has(imageId)
     });
@@ -1380,10 +1392,14 @@ async function displayImage(imageData, status, source = 'server', peerId = null,
         }
     }
     
-    // Ajouter l'image au cache avec le timestamp actuel
+    // Ajouter l'image au cache avec le timestamp actuel et les headers de cache
     imageCache.set(imageId, {
         timestamp: Date.now(),
-        data: imageData
+        data: imageData,
+        cacheHeaders: cacheHeaders || {
+            'Cache-Control': `max-age=${CACHE_DURATION}`,
+            'Expires': new Date(Date.now() + CACHE_DURATION * 1000).toUTCString()
+        }
     });
     displayedImages.add(imageId);
     
@@ -1404,6 +1420,7 @@ async function displayImage(imageData, status, source = 'server', peerId = null,
             isInCache: displayedImages.has(imageId),
             cacheValid: isValid,
             timestamp: new Date(imageCache.get(imageId)?.timestamp).toLocaleString(),
+            cacheHeaders: imageCache.get(imageId)?.cacheHeaders,
             allImages: Array.from(displayedImages)
         });
     };
@@ -1418,8 +1435,24 @@ async function displayImage(imageData, status, source = 'server', peerId = null,
     sourceDiv.className = `image-source ${source}`;
     sourceDiv.textContent = source === 'server' ? 'Serveur' : `Pair: ${peerId}`;
 
-    // Calculer la date d'expiration
-    const expirationDate = new Date(Date.now() + CACHE_DURATION * 1000);
+    // Calculer la date d'expiration en fonction des headers de cache
+    let expirationDate;
+    if (cacheHeaders) {
+        if (cacheHeaders.Expires) {
+            expirationDate = new Date(cacheHeaders.Expires);
+        } else if (cacheHeaders['Cache-Control']) {
+            const maxAgeMatch = cacheHeaders['Cache-Control'].match(/max-age=(\d+)/);
+            if (maxAgeMatch) {
+                const maxAge = parseInt(maxAgeMatch[1]);
+                expirationDate = new Date(Date.now() + maxAge * 1000);
+            }
+        }
+    }
+    
+    // Si pas de date d'expiration définie, utiliser la durée par défaut
+    if (!expirationDate) {
+        expirationDate = new Date(Date.now() + CACHE_DURATION * 1000);
+    }
 
     const statusDiv = document.createElement('div');
     statusDiv.className = 'status';
@@ -1497,6 +1530,7 @@ function changePeer() {
 function updateConnectionStatus(status, message) {
     const statusContainer = document.querySelector('.connection-status');
     if (!statusContainer) {
+        // Créer le conteneur s'il n'existe pas
         const container = document.createElement('div');
         container.className = 'connection-status';
         container.innerHTML = `
@@ -1511,17 +1545,30 @@ function updateConnectionStatus(status, message) {
             changePeer();
         });
     } else {
+        // Mettre à jour le conteneur existant
         const indicator = statusContainer.querySelector('.status-indicator');
         const text = statusContainer.querySelector('.status-text');
-        const changePeerBtn = statusContainer.querySelector('.change-peer-btn');
+        let changePeerBtn = statusContainer.querySelector('.change-peer-btn');
         
+        // Mettre à jour l'indicateur et le texte
         indicator.className = `status-indicator ${status}`;
         text.textContent = message;
         
-        // Afficher le bouton uniquement si on est connecté à un pair
+        // Gérer le bouton "Changer de pair"
         if (status === 'connected' && availablePeers.length > 1) {
+            if (!changePeerBtn) {
+                // Si le bouton n'existe pas, le créer
+                changePeerBtn = document.createElement('button');
+                changePeerBtn.id = 'changePeerBtn';
+                changePeerBtn.className = 'change-peer-btn';
+                changePeerBtn.textContent = 'Changer de pair';
+                changePeerBtn.addEventListener('click', () => {
+                    changePeer();
+                });
+                statusContainer.appendChild(changePeerBtn);
+            }
             changePeerBtn.style.display = 'block';
-        } else {
+        } else if (changePeerBtn) {
             changePeerBtn.style.display = 'none';
         }
     }
