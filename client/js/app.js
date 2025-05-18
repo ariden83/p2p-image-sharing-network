@@ -1040,10 +1040,14 @@ async function initializePeer() {
 
 // Charger une image de test
 async function loadTestImage() {
+    console.log('=== DÉBUT LOAD TEST IMAGE ===');
+    console.log('Index initial:', currentImageIndex);
+    
     const imagesContainer = document.getElementById('images-container');
     const loadingContainer = document.createElement('div');
     loadingContainer.className = 'image-container loading';
     imagesContainer.appendChild(loadingContainer);
+    console.log('Chargement de l\'image de test **************************************************** ' + currentImageIndex);
 
     try {
         if (currentImageIndex >= images.length) {
@@ -1059,6 +1063,7 @@ async function loadTestImage() {
         if (connections.size === 0) {
             console.log('Aucun pair connecté, chargement depuis le serveur');
             await loadImageFromServer(selectedImage, loadingContainer);
+            console.log('Chargement depuis le serveur terminé');
             return;
         }
 
@@ -1070,6 +1075,7 @@ async function loadTestImage() {
         if (!isConnectionActive) {
             console.log('Connexion au pair perdue, chargement depuis le serveur');
             await loadImageFromServer(selectedImage, loadingContainer);
+            console.log('Chargement depuis le serveur terminé');
             return;
         }
         
@@ -1121,7 +1127,19 @@ async function loadTestImage() {
 
             if (!hasImage) {
                 console.log(`Le pair ${currentPeerId} n'a pas l'image ${selectedImage} dans son cache`);
-                throw new Error('Image non disponible chez le pair');
+                // Charger l'image depuis le serveur
+                await loadImageFromServer(selectedImage, loadingContainer);
+                console.log('Chargement depuis le serveur terminé');
+                
+                // Mettre à jour la liste des pairs disponibles
+                await updateAvailablePeers();
+                
+                // Si d'autres pairs sont disponibles, se connecter à un nouveau pair
+                if (availablePeers.length > 1) {
+                    console.log('D\'autres pairs disponibles, changement de pair...');
+                    changePeer();
+                }
+                return;
             }
 
             console.log(`Le pair ${currentPeerId} a l'image ${selectedImage} dans son cache, chargement en cours...`);
@@ -1176,13 +1194,23 @@ async function loadTestImage() {
             loadingContainer.remove();
             console.log('Affichage de l\'image reçue du pair');
             displayImage(imageData, `Image reçue de ${currentPeerId} (${selectedImage})`, 'peer', currentPeerId);
-            currentImageIndex++;
+            console.log('Chargement depuis le pair terminé');
             return;
         } catch (error) {
             console.warn(`Échec de la récupération depuis le pair ${currentPeerId}:`, error);
             // Si on a une erreur de communication, on charge depuis le serveur
             console.log('Erreur de communication avec le pair, chargement depuis le serveur');
             await loadImageFromServer(selectedImage, loadingContainer);
+            console.log('Chargement depuis le serveur terminé');
+            
+            // Mettre à jour la liste des pairs disponibles
+            await updateAvailablePeers();
+            
+            // Si d'autres pairs sont disponibles, se connecter à un nouveau pair
+            if (availablePeers.length > 1) {
+                console.log('D\'autres pairs disponibles, changement de pair...');
+                changePeer();
+            }
         }
     } catch (error) {
         loadingContainer.remove();
@@ -1190,29 +1218,58 @@ async function loadTestImage() {
         errorContainer.className = 'error-message';
         errorContainer.textContent = `Erreur: ${error.message}`;
         imagesContainer.appendChild(errorContainer);
+    } finally {
+        console.log('finally **************************************************** ' + currentImageIndex);
+        // Incrémenter l'index une seule fois à la fin de la fonction
+        currentImageIndex++;
+        console.log('=== FIN LOAD TEST IMAGE ===');
+        console.log('Index final après incrémentation:', currentImageIndex);
     }
 }
 
 // Fonction utilitaire pour charger une image depuis le serveur
 async function loadImageFromServer(imagePath, loadingContainer) {
+    console.log(`=== DÉBUT LOAD IMAGE FROM SERVER ===`);
     console.log(`Chargement de l'image ${imagePath} depuis le serveur`);
-    // Utiliser le chemin complet depuis la racine du serveur
-    const fullPath = imagePath.startsWith('/') ? imagePath : `/${imagePath}`;
-    const response = await fetch(fullPath);
-    if (!response.ok) {
-        throw new Error(`Erreur HTTP: ${response.status}`);
-    }
+    console.log('Index avant chargement:', currentImageIndex);
     
-    const blob = await response.blob();
-    const reader = new FileReader();
-    reader.onloadend = () => {
+    try {
+        // Utiliser le chemin complet depuis la racine du serveur
+        const fullPath = imagePath.startsWith('/') ? imagePath : `/${imagePath}`;
+        const response = await fetch(fullPath);
+        if (!response.ok) {
+            throw new Error(`Erreur HTTP: ${response.status}`);
+        }
+        
+        const blob = await response.blob();
+        const reader = new FileReader();
+        
+        return new Promise((resolve, reject) => {
+            reader.onloadend = () => {
+                loadingContainer.remove();
+                const imageData = reader.result;
+                console.log('Image chargée depuis le serveur, affichage en cours');
+                displayImage(imageData, `Image locale (${imagePath})`, 'server');
+                console.log('Index après affichage:', currentImageIndex);
+                resolve();
+            };
+            
+            reader.onerror = (error) => {
+                loadingContainer.remove();
+                reject(new Error('Erreur lors de la lecture du fichier'));
+            };
+            
+            reader.readAsDataURL(blob);
+        });
+    } catch (error) {
         loadingContainer.remove();
-        const imageData = reader.result;
-        console.log('Image chargée depuis le serveur, affichage en cours');
-        displayImage(imageData, `Image locale (${imagePath})`, 'server');
-        currentImageIndex++;
-    };
-    reader.readAsDataURL(blob);
+        console.log('=== ERREUR LOAD IMAGE FROM SERVER ===');
+        console.log('Index lors de l\'erreur:', currentImageIndex);
+        throw error;
+    } finally {
+        console.log('=== FIN LOAD IMAGE FROM SERVER ===');
+        console.log('Index final:', currentImageIndex);
+    }
 }
 
 // Afficher une image
@@ -1240,7 +1297,7 @@ function displayImage(imageData, status, source = 'server', peerId = null, cache
     
     if (displayedImages.has(imageId)) {
         console.log(`Image ${imagePath} déjà affichée, on passe à la suivante`);
-        currentImageIndex++;
+        // Ne pas incrémenter ici, l'incrémentation se fera dans le finally de loadTestImage
         return;
     }
     
