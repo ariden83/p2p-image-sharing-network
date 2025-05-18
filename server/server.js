@@ -13,8 +13,11 @@ const config = {
     MIN_ACTIVE_PEERS: 2       // Nombre minimum de pairs actifs requis
 };
 
-// Liste en mémoire des meilleurs pairs
-let bestPeers = [];
+// Liste en mémoire des meilleurs pairs par path
+const bestPeersByPath = {
+    'page1': [],
+    'page2': []
+};
 let lastResetTime = Date.now();
 
 // Middleware
@@ -27,25 +30,27 @@ app.use(express.static(path.join(__dirname, '../client')));
 // Fonction pour mettre à jour la liste des meilleurs pairs
 function updateBestPeers(newPeer) {
     const now = Date.now();
+    const path = newPeer.address || 'page1';
+    const pathKey = path.includes('page2') ? 'page2' : 'page1';
     
     // Vérifier si on doit réinitialiser la liste
     if (now - lastResetTime >= config.RESET_INTERVAL) {
-        resetBestPeers();
+        resetBestPeers(pathKey);
         lastResetTime = now;
     }
 
     // Mettre à jour ou ajouter le pair
-    const existingPeerIndex = bestPeers.findIndex(p => p.peerId === newPeer.peerId);
+    const existingPeerIndex = bestPeersByPath[pathKey].findIndex(p => p.peerId === newPeer.peerId);
     if (existingPeerIndex !== -1) {
-        bestPeers[existingPeerIndex] = { ...bestPeers[existingPeerIndex], ...newPeer };
-        console.log(`Pair ${newPeer.peerId} mis à jour`);
+        bestPeersByPath[pathKey][existingPeerIndex] = { ...bestPeersByPath[pathKey][existingPeerIndex], ...newPeer };
+        console.log(`Pair ${newPeer.peerId} mis à jour pour le path ${pathKey}`);
     } else {
-        bestPeers.push(newPeer);
-        console.log(`Nouveau pair ${newPeer.peerId} ajouté`);
+        bestPeersByPath[pathKey].push(newPeer);
+        console.log(`Nouveau pair ${newPeer.peerId} ajouté pour le path ${pathKey}`);
     }
 
     // Trier les pairs par qualité de connexion
-    bestPeers.sort((a, b) => {
+    bestPeersByPath[pathKey].sort((a, b) => {
         const qualityA = a.connectionQuality || { latency: Infinity, bandwidth: 0 };
         const qualityB = b.connectionQuality || { latency: Infinity, bandwidth: 0 };
         
@@ -57,15 +62,15 @@ function updateBestPeers(newPeer) {
     });
 
     // Garder seulement les meilleurs pairs
-    bestPeers = bestPeers.slice(0, config.MAX_PEERS);
+    bestPeersByPath[pathKey] = bestPeersByPath[pathKey].slice(0, config.MAX_PEERS);
     
-    console.log('Liste des meilleurs pairs mise à jour:', bestPeers.map(p => p.peerId));
+    console.log(`Liste des meilleurs pairs mise à jour pour ${pathKey}:`, bestPeersByPath[pathKey].map(p => p.peerId));
 }
 
 // Nouvelle fonction pour réinitialiser la liste des meilleurs pairs
-function resetBestPeers() {
+function resetBestPeers(pathKey) {
     const now = Date.now();
-    const activePeers = bestPeers.filter(peer => {
+    const activePeers = bestPeersByPath[pathKey].filter(peer => {
         const lastUpdate = peer.timestamp || 0;
         const isActive = now - lastUpdate < config.HEARTBEAT_TIMEOUT;
         const quality = peer.connectionQuality || { latency: Infinity, bandwidth: 0 };
@@ -76,31 +81,34 @@ function resetBestPeers() {
     if (activePeers.length > config.MIN_ACTIVE_PEERS) {
         // Supprimer les 20% les moins performants
         const removeCount = Math.ceil(activePeers.length * 0.2);
-        bestPeers = activePeers.slice(0, activePeers.length - removeCount);
-        console.log(`Réinitialisation partielle : ${removeCount} pairs supprimés`);
+        bestPeersByPath[pathKey] = activePeers.slice(0, activePeers.length - removeCount);
+        console.log(`Réinitialisation partielle pour ${pathKey} : ${removeCount} pairs supprimés`);
     } else {
-        console.log('Pas assez de pairs actifs pour réinitialiser');
+        console.log(`Pas assez de pairs actifs pour réinitialiser ${pathKey}`);
     }
 }
 
 // Nettoyer les pairs inactifs
 function cleanupInactivePeers() {
     const now = Date.now();
-    const beforeCount = bestPeers.length;
     
-    bestPeers = bestPeers.filter(peer => {
-        const lastUpdate = peer.timestamp || 0;
-        const isActive = now - lastUpdate < config.HEARTBEAT_TIMEOUT;
-        if (!isActive) {
-            console.log(`Pair ${peer.peerId} marqué comme inactif (dernière mise à jour: ${Math.round((now - lastUpdate) / 1000)}s)`);
-        }
-        return isActive;
-    });
+    Object.keys(bestPeersByPath).forEach(pathKey => {
+        const beforeCount = bestPeersByPath[pathKey].length;
+        
+        bestPeersByPath[pathKey] = bestPeersByPath[pathKey].filter(peer => {
+            const lastUpdate = peer.timestamp || 0;
+            const isActive = now - lastUpdate < config.HEARTBEAT_TIMEOUT;
+            if (!isActive) {
+                console.log(`Pair ${peer.peerId} marqué comme inactif pour ${pathKey} (dernière mise à jour: ${Math.round((now - lastUpdate) / 1000)}s)`);
+            }
+            return isActive;
+        });
 
-    const removedCount = beforeCount - bestPeers.length;
-    if (removedCount > 0) {
-        console.log(`${removedCount} pairs inactifs supprimés`);
-    }
+        const removedCount = beforeCount - bestPeersByPath[pathKey].length;
+        if (removedCount > 0) {
+            console.log(`${removedCount} pairs inactifs supprimés de ${pathKey}`);
+        }
+    });
 }
 
 // Endpoint pour l'enregistrement d'un pair
@@ -131,18 +139,31 @@ app.post('/heartbeat', (req, res) => {
 app.post('/unregister', (req, res) => {
     const { peerId } = req.body;
     console.log(`Désinscription du pair ${peerId}`);
-    bestPeers = bestPeers.filter(peer => peer.peerId !== peerId);
+    Object.keys(bestPeersByPath).forEach(pathKey => {
+        bestPeersByPath[pathKey] = bestPeersByPath[pathKey].filter(peer => peer.peerId !== peerId);
+    });
     res.json({ success: true });
 });
 
 // Endpoint pour obtenir la liste des pairs
 app.get('/peers', (req, res) => {
     const currentPath = req.query.path || '';
-    const isPage2 = currentPath.includes('page2');
-    const filteredPeers = bestPeers.filter(peer => {
-        return peer.address && peer.address.includes(isPage2 ? 'page2' : 'page1');
+    console.log('Path demandé:', currentPath);
+    
+    // Déterminer le path key en fonction de l'URL
+    let pathKey = 'page1';
+    if (currentPath.includes('page2')) {
+        pathKey = 'page2';
+    }
+    
+    console.log('Path key sélectionné:', pathKey);
+    console.log('Pairs disponibles:', bestPeersByPath[pathKey]);
+    
+    res.json({ 
+        success: true, 
+        peers: bestPeersByPath[pathKey] || [],
+        currentPath: pathKey
     });
-    res.json({ success: true, peers: filteredPeers });
 });
 
 // Endpoint pour le test de ping
@@ -159,13 +180,21 @@ app.get('/bandwidth-test', (req, res) => {
 
 // Endpoint pour les statistiques du serveur
 app.get('/stats', (req, res) => {
-  res.json({
-    success: true,
-    uptime: process.uptime(),
-    activePeers: bestPeers.length,
-    maxPeers: config.MAX_PEERS,
-    lastReset: lastResetTime
-  });
+    const stats = {
+        success: true,
+        uptime: process.uptime(),
+        lastReset: lastResetTime,
+        paths: {}
+    };
+
+    Object.keys(bestPeersByPath).forEach(pathKey => {
+        stats.paths[pathKey] = {
+            activePeers: bestPeersByPath[pathKey].length,
+            maxPeers: config.MAX_PEERS
+        };
+    });
+
+    res.json(stats);
 });
 
 // Gestion des 404

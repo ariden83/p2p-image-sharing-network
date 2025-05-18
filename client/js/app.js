@@ -340,7 +340,8 @@ function updatePeerList() {
 // Mettre à jour la liste des pairs disponibles
 async function updateAvailablePeers() {
     try {
-        const response = await fetch(`${config.discoveryServer.url}/peers`);
+        const currentPath = window.location.pathname;
+        const response = await fetch(`${config.discoveryServer.url}/peers?path=${currentPath}`);
         if (!response.ok) {
             throw new Error('Erreur lors de la récupération des pairs');
         }
@@ -349,13 +350,8 @@ async function updateAvailablePeers() {
             throw new Error('Erreur serveur lors de la récupération des pairs');
         }
         
-        // Filtrer notre propre ID et les pairs selon la page courante
-        const currentPage = window.location.pathname.includes('page2') ? 'page2' : 'page1';
-        const newPeers = data.peers.filter(peerData => 
-            peerData.peerId !== peer.id && 
-            peerData.address && 
-            peerData.address.includes(currentPage)
-        );
+        // Filtrer notre propre ID
+        const newPeers = data.peers.filter(peerData => peerData.peerId !== peer.id);
         
         // Mettre à jour la liste des pairs disponibles
         availablePeers = newPeers;
